@@ -189,7 +189,8 @@
 #define MSG_DA_BUZZER_ACT_DEACT           "*20X#"
 #define MSG_DA_BUZZER_BEEPS               "*21XX#"
 #define MSG_CMD_ERROR                     "Error en comando"
-
+// - gps
+#define GPS_SATELLITES										4
 // - buzzer                               
 #define MSG_DA_RESET_DISTANCE_ANGLE       "Reset dis/ang"
 #define BUZZER_SUCCESS                    0
@@ -204,6 +205,7 @@
 #define LED_PURPLE                        1  //distance ok, angle no ok
 #define LED_RED                           2  //distance no ok
 #define LED_BLUE                          3  //configdata change
+#define LED_YELLOW                        4  //less than 4 satellites
 // - keypad
 #define ROWS                              4
 #define COLS                              4 
@@ -267,10 +269,7 @@ int angleoffset;
 // -led
 int led_color;
 // -Tacometer
-int tacoActualState1=0;
-int tacoActualState2=0;
-int tacoLastState=0;
-int tacoCounter=0;
+volatile int tacoCounter=0;
 // -buzzer
 int alarmAngleCounter=0;
 int alarmDistanceCounter=0;
@@ -302,6 +301,10 @@ void setup() {
   
   // Init gps
   ss.begin(GPSBaud);
+	
+	// Init taco (interrupt)
+	pinMode(GPIO_TACO, INPUT_PULLUP);
+	attachInterrupt(digitalPinToInterrupt(GPIO_TACO), tacoCheckLimitDistance, FALLING);
 
   // Init lcd
   lcd.begin();                      
@@ -314,7 +317,6 @@ void setup() {
   // Init magnetometer
   qmc.init();
   reset_mag=true;
-
 
   // Wait for gps initialization
   lcdPrint(MSG_INIT_1,"",0);
@@ -396,9 +398,16 @@ void loop() {
     }
   }
 
-  // Distance (Tacometer): check distance limit
+  // Distance (Tacometer): check distance limit. Here interrupt data is handled
   if (configdata[IDX_DISTANCE_ACT_DEACT]==DISTANCE_TACOMETER) {
-    distance_limit_flag = tacoCheckLimitDistance();
+		distance = 2 * M_PI * configdata[IDX_DISTANCE_WHEEL].toDouble()/1000 * tacoCounter;
+		if (distance>=configdata[IDX_DISTANCE_LIMIT].toInt()/1000) {
+				distance_limit_flag = true;
+		}
+		else {
+			alarmDistanceCounter=0;
+			distance_limit_flag = false;
+		}
   }
 
   // Distance auto mode
@@ -551,29 +560,8 @@ bool gpsCheckLimitDistance() {
 
 // Check if limit distance has been achieved. Distance measured with tacometer.
 bool tacoCheckLimitDistance(){
-  tacoActualState1=digitalRead(GPIO_TACO);
-  //delay(10);
-  //tacoActualState2=digitalRead(GPIO_TACO);
-  Serial.print(tacoActualState1);
-  Serial.print(";");
-  Serial.println(tacoActualState2);
-  //if (tacoActualState1 == tacoActualState2) {
-    if (tacoActualState1 != tacoLastState){
-      if (tacoActualState1 == LOW) {
-        tacoCounter = tacoCounter + 1;
-        Serial.println("tacoCounter: " + String(tacoCounter));
-        distance = 2 * M_PI * configdata[IDX_DISTANCE_WHEEL].toDouble()/1000 * tacoCounter;
-      }
-    }
-  //}
-  tacoLastState= tacoActualState1;
-  if (distance>=configdata[IDX_DISTANCE_LIMIT].toInt()/1000) {
-      return true;
-  }
-  else {
-    alarmDistanceCounter=0;
-    return false;
-  }
+	tacoCounter = tacoCounter + 1;
+	Serial.println("tacoCounter: " + String(tacoCounter));
 }
 
 // ********************************************************************************************* //
@@ -975,7 +963,12 @@ void playLed (int color, int timeout) {
     digitalWrite(GPIO_LED_G, 0);
     digitalWrite(GPIO_LED_B, 255);
   }
-
+	else if (color == LED_YELLOW) {
+    digitalWrite(GPIO_LED_R, 255);
+    digitalWrite(GPIO_LED_G, 255);
+    digitalWrite(GPIO_LED_B, 0);
+  }
+	
   if (timeout != 0){
     delay(timeout);
     playLed(prev_led_color,0);
@@ -995,7 +988,6 @@ void buzzerDisplayResults() {
         alarmDistanceCounter++;
       }
     }
-  
     // Alarm angle
     if (configdata[IDX_ANGLE_ACT_DEACT] != 0){
       if (angle_limit_flag == true and 
@@ -1017,14 +1009,24 @@ void ledDisplayResults() {
       ledAlreadySet = true;
     }
   }
-
   // Alarm angle
-  if ((configdata[IDX_ANGLE_ACT_DEACT] != 0) and (ledAlreadySet == false)){
+  if ((configdata[IDX_ANGLE_ACT_DEACT] != OFF) and (ledAlreadySet == false)){
     if (angle_limit_flag == true){
       playLed(LED_PURPLE,0);
-    }
-    else {
-      playLed(LED_GREEN,0);
+			ledAlreadySet = true;
     }
   }
+	// Alarm number of satellites
+  if ((configdata[IDX_DISTANCE_ACT_DEACT] == DISTANCE_GPS) and (ledAlreadySet == false)){
+    if (gps.satellites.value() < GPS_SATELLITES){
+      //Serial.print("Satelites:");
+      //Serial.println(gps.satellites.value());
+      playLed(LED_YELLOW,0);
+			ledAlreadySet = true;
+    }
+  }
+	// Default: green led
+	if (ledAlreadySet == false){
+		playLed(LED_GREEN,0);
+	}
 }
